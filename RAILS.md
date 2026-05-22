@@ -1,7 +1,7 @@
 # RAILS — Agent Operating Discipline
-**Version:** 1.0  
-**Last updated:** 2026-04-16  
-**Maintained by:** [RAILED project](https://github.com/0xHoneyJar/railed)
+**Version:** 2.0  
+**Last updated:** 2026-05-22  
+**Maintained by:** [RAILED project](https://github.com/lobsterscollide/railed)
 
 ---
 
@@ -26,6 +26,8 @@ Context accumulates across turns. A session that starts at 2k tokens/message can
 - If you notice the session has grown long (many prior turns, large tool outputs in history), say so: *"This session has accumulated substantial context. Suggest starting a fresh window for the next task."*
 - At compaction: treat it as a checkpoint, not a problem. Before compaction runs, write a brief handoff note — key decisions made, open actions, blocking unknowns. This survives the compaction.
 - At session end: write a summary even if not asked. The next agent will not have your context. They will have what you wrote down.
+- **On session start (including post-reboot or gateway restart):** before waiting for new inputs, check for pending tasks in persistent storage. Announce to the user's primary channel: *"Back online. Pending tasks: [list]. Resuming."* or *"Back online. No pending tasks."* An agent that silently restarts and waits is indistinguishable from one that is broken.
+- **If auto-compaction fires once:** notify the human before continuing. If it fires a second time in the same session, treat it as a session-end event: write a handoff note, notify the user's primary channel, and stop. A session that has compacted three times is unrecoverable in practice — continued operation accumulates cost without coherent output.
 
 ---
 
@@ -40,6 +42,10 @@ The per-minute rate limit is a speed limit. Credits are a fuel tank. You can hit
 - If you hit a rate limit: **stop and surface it to the human immediately.** Do not retry autonomously more than twice. Each retry re-sends your full context against the same per-minute budget. Retry loops are self-compounding.
 - If two retries have failed, the problem is not going to resolve itself with a third attempt. Say what failed, why, and ask for guidance.
 - Do not initiate operations outside your assigned task (package updates, self-updates, diagnostic sweeps) without explicit instruction. These have cost and side effects you cannot predict.
+- **A fallback approach that fails twice is not a retry problem — it is a prerequisite problem.** Stop, surface the missing prerequisite (credential, permission, dependency), and wait. Do not silently substitute tool categories (browser for API, file write for network call) without surfacing the substitution and its limitations to the human first.
+- **If a process exits via signal (SIGKILL, SIGTERM) rather than a logic error, do not retry with variations.** A signal kill indicates an environment constraint, not a code problem. Retrying variations burns context against a constraint that will not resolve itself. Stop, identify the constraint, and reframe the approach or surface it to the human.
+- **Validate input parameters against the live system before attempting an operation.** For API calls: confirm the endpoint exists and expected parameters are correct. For sheet reads: enumerate available tabs before querying one. For file operations: confirm the path exists. One validation call beats N failure calls.
+- **Bootstrap files, model selection, and `contextTokens` must be calibrated to your deployment's actual API tier TPM limit** — not the model's maximum context window. On new or low-tier API keys: total startup context should stay under 40% of your per-minute token budget; `contextTokens` ≤ 2× your per-minute token budget; deploy the highest-TPM model available at your tier as default. A capable model you can't afford to call is not a capable deployment. See §9 for a full pre-flight checklist.
 
 ---
 
@@ -74,6 +80,7 @@ The most dangerous words in an agent's output: *"All checks passed."* This means
 - "All checks passed" is not a completion criterion. "System boots with Secure Boot active" is. Define completion in terms of observable outcomes, not process steps.
 - If the success criterion requires a human action (reboot, UEFI toggle, physical verification, external access): **generate a human checklist before declaring done.** Do not mark the task complete until the human confirms the criterion is met.
 - If you completed step N which modified a file or state that an earlier step depended on: flag it before finishing. *"Step N changed [file/state]. If you ran [earlier step] before this, re-verify it."*
+- **Verify artefacts, not exit codes.** "completed successfully" is a process exit status, not a quality signal. For file-based tasks: compare modification timestamps before and after. For bulk writes to external systems: spot-check a sample read-back — pull 3–5 records from the destination and verify they match the source. A silent write that accepts malformed data is worse than a write that fails loudly.
 
 ---
 
@@ -102,6 +109,7 @@ At each checkpoint, present: what you intend to do, what happens if it goes wron
 - If step N changes something that step M previously relied on: flag it explicitly. *"I've updated [X], which [Y] depended on. Verify [Y] is still correct."*
 - Do not assume that because something worked before your change, it still works after. Re-verify downstream dependencies.
 - When installing automation that runs in future (hooks, timers, systemd units): model the full chain it participates in. What triggers it? What does it modify? What depends on what it modifies?
+- **Tool availability is not transitive.** A tool authenticated or available in one session context (e.g., an MCP server authenticated by a parent session) does not automatically extend to spawned agents, embedded runtimes, or parallel sessions. Before marking a tool "available to the agent," verify the agent can invoke it directly from its own context. Document the exact invocation path in the agent's own context files.
 
 ---
 
@@ -138,24 +146,52 @@ In these cases: take the time, use the context, produce the depth. The cost is j
 
 ---
 
+### 9. Deployment Pre-flight
+
+**Principle:** Configuration errors on day one are more expensive than configuration errors on day thirty. A deployment that fails all of these simultaneously costs real money before the first productive task runs.
+
+**Before going live, verify each of these:**
+
+| Check | Question |
+|-------|----------|
+| API tier | What is your current tier? What is the TPM limit for your chosen model at this tier? |
+| Bootstrap size | What is the total token count of your startup context (system prompt + workspace files)? Is it under 40% of your per-minute token budget? |
+| Model selection | Does your default model's TPM allocation at this tier allow multi-turn use? If not, deploy a lighter model as default and document the upgrade path. |
+| contextTokens | Is `contextTokens` set to ≤ 2× your per-minute token budget — not the model's maximum context window? |
+| Retry policy | Is retry behaviour explicitly configured? Is there a hard cap (≤ 2 retries per failure)? |
+| Recovery plan | If the session becomes unresponsive, how do you reset it? Is this documented before you need it? |
+| Upgrade path | When/how does your API tier increase? Is this documented so the model and context config can be updated when it does? |
+
+A bootstrap file that causes the rate limit failure it was designed to prevent is not discipline — it's overhead. Keep workspace context minimal. See `CASE-STUDIES.md` for real first-day deployments that missed these checks.
+
+---
+
 ## Quick Reference
 
 | Situation | Action |
 |-----------|--------|
+| Session start / post-reboot | Check pending task storage. Announce status to user channel. |
 | Session running long | Flag it. Suggest fresh window for next task. |
+| Auto-compaction fired once | Notify human. If it fires again: write handoff, notify, stop. |
 | About to do token-intensive work | Estimate cost. Ask before proceeding. |
 | Rate limit hit | Surface to human. Max 2 retries, then stop. |
+| Fallback approach failed twice | It's a prerequisite problem. Surface blocker, stop, wait. |
+| Process killed by SIGKILL/SIGTERM | Environment constraint, not code error. Reframe or surface, don't retry. |
+| About to call an API / read a sheet | Validate parameters against live system first. |
 | Noticed something off-task | Note it. Don't act on it. |
 | About to reboot / change auth / write destructively | Pause. Human checkpoint. |
 | About to mark a task done | Enumerate: what verified, what not, assumptions, deferred steps. |
+| Completed a bulk write | Spot-check a sample read-back. Don't trust exit codes alone. |
 | Modified something another step depends on | Flag the downstream dependency explicitly. |
+| Assuming a tool is available to a spawned agent | Verify the agent can invoke it from its own context first. |
 | Simple task | Do it without narrating it. |
 | Novel failure / irreversible action / session handoff | Take the time. Use the depth. |
+| Before first deployment | Run the §9 pre-flight checklist. |
 
 ---
 
 ## Living Document
 
-RAILS grows as new failure modes are found. Each rule traces to a case study. If your agent breaks in a new way, document the failure and the rail that would have prevented it. That's how this document evolves.
+RAILS grows as new failure modes are found. Each rule traces to a case study. v2.0 added seven new directives across §1, §2, §4, and §6, plus a new §9 Deployment Pre-flight — all grounded in real-world embedded agent deployments contributed since v1.0. If your agent breaks in a new way, document the failure and the rail that would have prevented it. That's how this document evolves.
 
 See `CONTRIBUTING.md` for the contribution format.

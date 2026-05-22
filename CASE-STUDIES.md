@@ -1,6 +1,8 @@
 # RAILED — Case Studies
 
-Two failure modes from real deployments. These cases motivated every rule in `RAILS.md`.
+Real failure modes from real deployments. Every rule in `RAILS.md` traces to a case here.
+
+Cases 1–2 are the founding failures that motivated RAILED. Cases 3–8 are contributions from external deployments — anonymised but structurally intact. The details that would identify an operator are stripped; the failure modes are not.
 
 ---
 
@@ -142,3 +144,193 @@ Long sessions are not just slow — they get exponentially more expensive per tu
 ---
 
 *Each pattern maps to one or more disciplines in `RAILS.md`. If your agent fails in a new way, document the case in this format and submit a pull request.*
+
+---
+
+## External Contributions (v2.0)
+
+*The following cases were contributed from real-world deployments and anonymised for publication. Operator and company details are withheld; failure modes and technical specifics are preserved intact.*
+
+---
+
+## Case Study 3: Browser Substitution Loop (No Escape Condition)
+
+**Deployment:** Embedded business operations agent, Mac mini, OpenClaw + claude-sonnet-4-6  
+**Context:** Agent operating largely unattended with tool access to browser, shell, and file system
+
+### What Happened
+
+The agent was tasked with writing data to a cloud spreadsheet. API credentials were not yet in place. Rather than surfacing a blocker, the agent fell back to browser DOM manipulation — injecting JavaScript into the spreadsheet formula bar via `contenteditable` element targeting.
+
+The browser process was SIGKILL'd mid-execution. The agent immediately restarted the same approach. This repeated silently for several hours, generating 300+ session messages with no human notification.
+
+Each restart re-entered the tool loop, adding to session context. This directly fed the context overflow in Case Study 4 — the two failures amplified each other.
+
+### Root Causes
+
+**No approach-class tracking.** Each individual attempt had a plausible reason to retry — different element target, different JavaScript approach, different timing. But the agent had no cross-attempt state asking "is this still the right tool category?" Each attempt started fresh on *how* to do the thing, not *whether* the approach class was fundamentally flawed.
+
+**No exit condition on fallbacks.** The fallback itself was rational. The absence of an escape condition was not. Once the primary approach (API) was unavailable, the fallback (browser) could run indefinitely.
+
+**No human notification.** The agent was unattended. The loop ran silently for hours. The operator had no visibility until the damage was done.
+
+### Rails That Would Have Prevented It
+
+- **Approach-class failure tracking:** A fallback that fails twice is a prerequisite problem, not a retry problem. The useful question is not "did this script fail" but "did browser-based sheet writes fail?" — a higher-level failure class.
+- **Surface and stop on repeated fallback failure:** After two failed fallback attempts, the agent should emit: *"Cannot complete this task with available tools. Missing: [credential/permission/dependency]. Awaiting resolution."*
+- **No silent tool-category substitution:** When falling back to a different tool category (browser for API), surface the substitution and its limitations to the human before proceeding, not after failing twenty times.
+
+**Maps to:** §2 Budget Awareness, §3 Scope Discipline
+
+---
+
+## Case Study 4: Context Overflow Past Recovery (The 3-Strike Ceiling)
+
+**Deployment:** Same embedded agent as Case Study 3, same session
+
+### What Happened
+
+The browser loop from Case Study 3 drove the session to 600+ messages and 300+ LLM turns. Auto-compaction fired three times. After the third compaction attempt the session was effectively dead — the agent was present but unresponsive to incoming messages. No error was surfaced to the operator.
+
+Recovery was harder than expected:
+- Clearing the session file to empty caused "invalid session header" errors on the next gateway load — the framework expected a valid JSON-lines file, not an empty one. The file had to be deleted entirely.
+- Clearing the session file alone was insufficient. A background agent subprocess from the previous session continued running, maintaining the browser loop. A full gateway restart was required.
+- The operator had no visibility that the agent was unresponsive until hours had passed.
+
+### Root Causes
+
+**No escalating signal on compaction.** Compaction fired, retried, failed, retried again. Each attempt was invisible to the operator. Silent failure is the worst possible outcome for an unattended agent.
+
+**No documented recovery path.** When the session finally became unresponsive, the recovery procedure wasn't documented. The operator had to discover the session file format constraint and the subprocess issue under pressure.
+
+### Rails That Would Have Prevented It
+
+- **Notify on first compaction:** Before retrying after compaction, emit a human-visible warning.
+- **Treat second compaction as session-end:** Write a handoff note, notify the operator's primary channel, stop. Do not attempt a third compaction — the session is unrecoverable in practice.
+- **Document the reset procedure** in the agent's own context before deployment, not after the first incident.
+
+**Maps to:** §1 Session Hygiene
+
+---
+
+## Case Study 5: Tool Scope Non-Transitivity (MCP Tools Don't Follow the Agent)
+
+**Deployment:** Same embedded agent setup; orchestration from a Claude Code session
+
+### What Happened
+
+A Claude Code orchestration session authenticated two MCP servers (cloud storage and email). The developer assumed — without stating or verifying — that the embedded agent would inherit access to these tools.
+
+It did not. MCP tools are scoped to the session that authenticated them. The embedded agent had no awareness of them and continued using browser fallback for the tasks those tools were meant to handle.
+
+Both systems were operating correctly within their own context. The gap was in the handoff assumption: the developer believed the tool problem was solved; the agent didn't know the tools existed.
+
+### Root Causes
+
+**Tool availability assumed, not verified.** No one checked whether the agent could actually invoke the tools from its own shell or context. The assumption of transitivity was never tested.
+
+**No invocation path documented.** Even if the tools had been available, there was no record of how the agent was expected to call them. The agent had nothing to reference.
+
+### Rails That Would Have Prevented It
+
+- **Verify tool availability from the agent's own context:** Can the agent invoke the tool directly? If not, it's not available to the agent regardless of what's authenticated elsewhere.
+- **Document the invocation path in the agent's context files:** Tool name, how to call it, expected input/output. If it's not in the agent's context, the agent doesn't know it exists.
+
+**Maps to:** §6 Dependency Awareness
+
+---
+
+## Case Study 6: Post-Reboot Task Silence
+
+**Deployment:** Same embedded agent; launchd-managed restart after machine reboot
+
+### What Happened
+
+The machine rebooted. The heartbeat mechanism restarted via launchd. The agent came back online but did not resume or acknowledge any pending tasks. A task queue file existed but was never read on startup — there was no trigger to check it on cold boot, only on heartbeat interval.
+
+From the operator's perspective: the agent was online and responsive to new messages, but had silently forgotten everything it was working on.
+
+### Root Causes
+
+**No cold-start task check.** The session start logic waited for incoming messages rather than first checking persistent state. The pending task queue existed; the agent just never looked at it.
+
+**Silent restart.** The agent came back online without announcing its state. The operator assumed continuity; the agent assumed a clean slate.
+
+### Rails That Would Have Prevented It
+
+- **Check persistent task storage on every session start**, including post-reboot. Announce the result to the operator's primary channel before waiting for new inputs.
+- **Never silently restart.** "Back online. No pending tasks." costs one message. Silently restarting and missing pending work costs far more.
+
+**Maps to:** §1 Session Hygiene
+
+---
+
+## Case Study 7: Bootstrap Context Overload on a New API Key
+
+**Deployment:** Embedded business operations agent, new Anthropic API key, Tier 1
+
+### What Happened
+
+The agent failed on every session start with 429 rate limit errors before the operator could send a single message. The session start wasn't even reaching the first user turn.
+
+**Root cause:** Workspace bootstrap files (system prompt + discipline docs + daily context files) totalled ~22KB / ~6,000 tokens. On a new Tier 1 API key with a 10,000 input-tokens-per-minute limit, the first turn alone exceeded the per-minute budget. Auto-retry made it unrecoverable — each retry re-sent the full startup context against the same depleted budget.
+
+**Fix:** Workspace files were trimmed from 22KB to ~9.5KB. The default model was switched to a lighter model with a higher TPM allocation at Tier 1. `contextTokens` was reduced to calibrate to the tier's budget rather than the model's maximum. The agent became immediately and consistently stable.
+
+### Root Causes
+
+**Configuration calibrated to model limits, not tier limits.** The settings were correct for a higher-tier key. They were wrong for a Tier 1 key.
+
+**The discipline document caused the failure it was meant to prevent.** A RAILS.md that is too large to load on Tier 1 is not discipline — it's overhead.
+
+**No pre-deployment calibration check.** Nothing prompted the operator to verify these settings before first run.
+
+### Rails That Would Have Prevented It
+
+- **Run the §9 pre-flight checklist before any first deployment.** API tier TPM limit, bootstrap token count, model selection, and `contextTokens` must all be verified together.
+- **Size discipline documents to the deployment.** On Tier 1: keep workspace files under 4,000 tokens total. A condensed RAILS.md (rule statements only, no explanatory prose) is more effective than a comprehensive one that prevents the session from starting.
+- **Use the highest-TPM model available at your tier as default.** Upgrade to higher-capability models once API spend history raises the tier.
+
+**Maps to:** §2 Budget Awareness, §9 Deployment Pre-flight
+
+---
+
+## Case Study 8: Environment Constraint Mistaken for Execution Failure
+
+**Deployment:** Same embedded agent (Case Studies 3–6); OAuth setup task
+
+### What Happened
+
+The agent needed to set up OAuth access for a cloud service. It attempted to run an interactive OAuth flow from within a sandboxed exec environment. The process was killed (SIGKILL) before completing. The agent retried with variations — different port, different flags, foreground vs. background — four times. Each attempt was killed.
+
+The correct approach was available after the first attempt: interactive OAuth cannot complete inside a sandboxed exec environment. The signal was clear (the OS killing a process that tries to open a local HTTP server). But the agent kept varying *how* rather than recognising *what* — the constraint class.
+
+The simpler fix (consolidating the new OAuth scope into an existing token, requiring one human re-auth instead of a new browser flow) was available from the start. It took four failed attempts and a human prompt to reach it.
+
+### Root Causes
+
+**Execution failure and environment constraint treated the same way.** A logic error benefits from a retry with variations. An environment constraint does not — the constraint is constant. The agent had no heuristic to distinguish them.
+
+**Retry variations accumulated context without progress.** Each failed attempt added tool output to history. The session grew more expensive per turn while making no progress.
+
+### Rails That Would Have Prevented It
+
+- **A process killed by signal (SIGKILL, SIGTERM) is an environment constraint, not a transient error.** Do not retry with variations. Identify the constraint class and find a structurally different approach — or surface it to the human.
+- **Check whether scope consolidation is available before creating new auth flows.** Adding a scope to an existing authenticated client is almost always simpler and requires less human action than a new OAuth flow.
+
+**Maps to:** §2 Budget Awareness
+
+---
+
+## Updated Patterns (v2.0)
+
+The original five patterns from Cases 1–2 hold. The external contributions add three more.
+
+**6. Fallback loops compound faster than primary failures.**
+A fallback is rational. A fallback with no exit condition is a trap. The failure isn't the fallback — it's the absence of a count, a cap, or a "is this approach class working?" check.
+
+**7. Unattended agents require explicit escalation paths.**
+An agent that fails silently is indistinguishable from an agent that is working. For unattended operation, every failure mode needs a human-visible signal: compaction, context overflow, blocked task, silent restart. If the operator can't see it, it doesn't exist from their perspective.
+
+**8. Environment constraints are permanent; execution failures are transient.**
+Retrying a transient failure is correct. Retrying an environment constraint with variations is expensive and always wrong. The difference is visible: execution failures return error codes; environment constraints get killed by the OS or return permanent access denied responses. Treat them differently.

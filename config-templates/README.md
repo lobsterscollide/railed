@@ -6,7 +6,7 @@ These templates show how RAILED's behavioral principles translate into framework
 
 ## openclaw.json
 
-Annotated guide to `openclaw.json` — the configuration for [OpenClaw](https://github.com/0xHoneyJar/openclaw) deployments.
+Annotated guide to `openclaw.json` — the configuration for OpenClaw deployments.
 
 ### contextTokens
 

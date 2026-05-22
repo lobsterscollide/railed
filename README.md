@@ -68,30 +68,35 @@ See `config-templates/README.md` for a full annotation of each setting and guida
 
 ---
 
-## The Eight Disciplines
+## The Nine Disciplines
 
-`RAILS.md` establishes eight operating disciplines. Every rule traces to a documented failure:
+`RAILS.md` establishes nine operating disciplines. Every rule traces to a documented failure:
 
-1. **Session hygiene** — new task, new session; context costs compound
-2. **Budget awareness** — pre-paid credits don't reset; retries are self-compounding
+1. **Session hygiene** — new task, new session; announce state on cold start; context costs compound
+2. **Budget awareness** — pre-paid credits don't reset; retries are self-compounding; calibrate to your API tier
 3. **Scope discipline** — do what was asked; flag everything else
-4. **Completion discipline** — enumerate what you did NOT verify, not just what passed
+4. **Completion discipline** — enumerate what you did NOT verify, not just what passed; verify artefacts not exit codes
 5. **Human checkpoints** — high-risk actions require human approval before execution
-6. **Dependency awareness** — when you change X, flag what depended on X
+6. **Dependency awareness** — when you change X, flag what depended on X; tools are not transitive across session contexts
 7. **When to use less** — brevity is not laziness; narrating is not doing
 8. **When to use more** — depth is justified for novel failures and irreversible actions
+9. **Deployment pre-flight** — calibrate bootstrap size, model, and token budget to your API tier before first run
 
 ---
 
 ## The Case Studies
 
-Two real failures motivated this project. Both are documented in full in `CASE-STUDIES.md`:
+Eight real failures documented in `CASE-STUDIES.md`. Cases 1–2 are the founding failures that motivated RAILED. Cases 3–8 are contributed from external deployments, anonymised for publication.
 
-- **Case Study 1:** An agent assigned a sysadmin task with no scope enforcement, no retry cap, and no session hygiene. It self-initiated an update outside its task, hit the rate limit, retried in a compounding loop, and exhausted the API credits mid-session.
+- **Case Study 1:** An agent with no scope enforcement retried in a compounding rate-limit loop, self-initiated an out-of-scope update, and exhausted API credits mid-session.
+- **Case Study 2:** An agent completed every visible step of a system task correctly — all checks green — and advised the user to proceed. The system failed on the action that required human confirmation. The agent had no mechanism to surface what it hadn't verified.
+- **Cases 3–4:** A browser substitution loop with no escape condition ran silently for hours, feeding a context overflow that left the agent unresponsive with no operator visibility.
+- **Case Study 5:** MCP tools authenticated in an orchestrating session didn't extend to the embedded agent — which kept using browser fallback because no one verified it could invoke the tools directly.
+- **Case Study 6:** A post-reboot agent came back online, silently forgot its pending tasks, and waited for new inputs instead of announcing its state.
+- **Case Study 7:** A RAILS.md that was too large to load on a Tier 1 API key caused the rate-limit failure it was designed to prevent — before the first user turn.
+- **Case Study 8:** An environment constraint (sandboxed exec environment) was retried four times with variations instead of being recognised as a permanent constraint.
 
-- **Case Study 2:** An agent that completed every visible step of a Secure Boot setup correctly — all checks green — and advised the user to proceed. The system panicked on reboot. The agent had no mechanism to surface what it didn't know, only to confirm what it had checked.
-
-Both failures were avoidable. The rails that would have prevented them are in `RAILS.md`.
+All failures were avoidable. The rails that would have prevented them are in `RAILS.md`.
 
 ---
 
@@ -121,7 +126,7 @@ We're specifically interested in:
 
 ## Project Status
 
-RAILED is in active use, deployed on a hardened Arch Linux machine as the operating discipline for a local Clawbot instance.
+**v2.0** — active. Seven new directives and a deployment pre-flight checklist added from real-world embedded agent deployments. Eight case studies documented.
 
 Known gaps (tracked in the case studies):
 - Per-task tool allowlists
