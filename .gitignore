@@ -1,0 +1,3 @@
+# Local, private working notes — never commit
+*.private.md
+local/

@@ -1,0 +1,17 @@
+{
+  "contextTokens": 60000,
+  "compaction": {
+    "mode": "safeguard",
+    "notifyUser": true,
+    "recentTurnsPreserve": 5,
+    "maxHistoryShare": 0.5,
+    "memoryFlush": {
+      "enabled": true
+    }
+  },
+  "subagents": {
+    "maxConcurrent": 2,
+    "maxSpawnDepth": 1,
+    "maxChildrenPerAgent": 3
+  }
+}
